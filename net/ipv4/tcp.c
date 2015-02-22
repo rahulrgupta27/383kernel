@@ -280,6 +280,7 @@
 #include <asm/uaccess.h>
 #include <asm/ioctls.h>
 
+#define Message(a, b...)        printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b) 
 int sysctl_tcp_fin_timeout __read_mostly = TCP_FIN_TIMEOUT;
 
 struct percpu_counter tcp_orphan_count;
@@ -764,6 +765,7 @@ struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp)
 
 	/* The TCP header must be at least 32-bit aligned.  */
 	size = ALIGN(size, 4);
+	Message("size=%d", size);
 
 	skb = alloc_skb_fclone(size + sk->sk_prot->max_header, gfp);
 	if (skb) {
@@ -1030,10 +1032,12 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	bool sg;
 	long timeo;
 
+	Message("");
 	lock_sock(sk);
 
 	flags = msg->msg_flags;
 	if (flags & MSG_FASTOPEN) {
+		Message("");
 		err = tcp_sendmsg_fastopen(sk, msg, &copied_syn);
 		if (err == -EINPROGRESS && copied_syn > 0)
 			goto out;
@@ -1111,6 +1115,7 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 			if (copy <= 0) {
 new_segment:
+				Message("new_segment");
 				/* Allocate new segment. If the interface is SG,
 				 * allocate skb fitting to single page.
 				 */
@@ -1171,6 +1176,7 @@ new_segment:
 							       pfrag->page,
 							       pfrag->offset,
 							       copy);
+				Message("copy=%d", copy);
 				if (err)
 					goto do_error;
 
@@ -1194,6 +1200,7 @@ new_segment:
 
 			from += copy;
 			copied += copy;
+			Message("copied=%d", copied);
 			if ((seglen -= copy) == 0 && iovlen == 0)
 				goto out;
 
