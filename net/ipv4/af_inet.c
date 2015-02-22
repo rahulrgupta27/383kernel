@@ -780,7 +780,7 @@ int inet_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 	struct sock *sk = sock->sk;
 
 	sock_rps_record_flow(sk);
-	printk("\n inet_sendmsg: entered\n");
+	printk("\n inet_sendmsg: entered: msghdr=%llx, size=%d\n", msg, size);
 
 	/* We may need to bind the socket. */
 	if (!inet_sk(sk)->inet_num && !sk->sk_prot->no_autobind &&
