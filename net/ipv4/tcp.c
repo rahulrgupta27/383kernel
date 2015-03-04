@@ -1033,7 +1033,11 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	bool sg;
 	long timeo;
 
-	Message("entered: msg=%llx, size=%d", msg, size);
+	//Message("entered: msg=%llx, size=%d, msg_name=%c", msg, size, 
+	//		*((char*)(msg->msg_name)));
+
+	Message("");
+	//printk("tcp_sendmsg: entered: msg=%llx, size=%d, msg_name=%c", msg, size, *((char*)(msg->msg_name)));
 	lock_sock(sk);
 
 	flags = msg->msg_flags;
