@@ -106,6 +106,7 @@
 #include <linux/sockios.h>
 #include <linux/atalk.h>
 
+#define Message_recv(a, b...)        printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b)
 static int sock_no_open(struct inode *irrelevant, struct file *dontcare);
 static ssize_t sock_aio_read(struct kiocb *iocb, const struct iovec *iov,
 			 unsigned long nr_segs, loff_t pos);
@@ -642,7 +643,7 @@ int sock_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 	struct sock_iocb siocb;
 	int ret;
 
-	printk("sock_sendmsg: entering: size=%d, msg=%llx\n", size, msg);
+	Message_recv("sock_sendmsg: entering: size=%d, msg=%llx\n", size, msg);
 	init_sync_kiocb(&iocb, NULL);
 	iocb.private = &siocb;
 	ret = __sock_sendmsg(&iocb, sock, msg, size);
@@ -806,6 +807,7 @@ int sock_recvmsg(struct socket *sock, struct msghdr *msg,
 	struct kiocb iocb;
 	struct sock_iocb siocb;
 	int ret;
+	Message_recv("size=%d", size);
 
 	init_sync_kiocb(&iocb, NULL);
 	iocb.private = &siocb;

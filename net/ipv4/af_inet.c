@@ -120,6 +120,7 @@
 #endif
 
 
+#define Message_recv(a, b...)        printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b)
 /* The inetsw table contains everything that inet_create needs to
  * build a new socket.
  */
@@ -815,6 +816,7 @@ int inet_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 	struct sock *sk = sock->sk;
 	int addr_len = 0;
 	int err;
+	Message_recv("");
 
 	sock_rps_record_flow(sk);
 

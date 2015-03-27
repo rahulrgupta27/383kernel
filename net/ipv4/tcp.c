@@ -280,8 +280,9 @@
 #include <asm/uaccess.h>
 #include <asm/ioctls.h>
 
-#define Message(a, b...)        printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b) 
-#define Message1(a, b...)        printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b) 
+#define Message(a, b...)        //printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b) 
+#define Message1(a, b...)        //printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b) 
+#define Message_recv(a, b...)        printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b) 
 int sysctl_tcp_fin_timeout __read_mostly = TCP_FIN_TIMEOUT;
 
 struct percpu_counter tcp_orphan_count;
@@ -1592,6 +1593,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	u32 urg_hole = 0;
 
 	lock_sock(sk);
+	Message_recv("nonblock=%d, len=%d, msg_namelen=%d", nonblock, len, msg_namelen);	//1
 
 	err = -ENOTCONN;
 	if (sk->sk_state == TCP_LISTEN)
@@ -1604,6 +1606,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		goto recv_urg;
 
 	if (unlikely(tp->repair)) {
+		Message_recv("inside repair");
 		err = -EPERM;
 		if (!(flags & MSG_PEEK))
 			goto out;
@@ -1627,6 +1630,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	target = sock_rcvlowat(sk, flags & MSG_WAITALL, len);
 
 #ifdef CONFIG_NET_DMA
+	Message_recv("CONFIG_NET_DMA");//2
 	tp->ucopy.dma_chan = NULL;
 	preempt_disable();
 	skb = skb_peek_tail(&sk->sk_receive_queue);
@@ -1650,9 +1654,12 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 	do {
 		u32 offset;
+		Message_recv("inside do");//3
 
 		/* Are we at urgent data? Stop if we have read anything or have SIGURG pending. */
 		if (tp->urg_data && tp->urg_seq == *seq) {
+			Message_recv("urgent data");
+
 			if (copied)
 				break;
 			if (signal_pending(current)) {
@@ -1664,6 +1671,8 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		/* Next get a buffer. */
 
 		skb_queue_walk(&sk->sk_receive_queue, skb) {
+			Message_recv("next get a buffer");
+
 			/* Now that we have two receive queues this
 			 * shouldn't happen.
 			 */
@@ -1687,17 +1696,24 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 		/* Well, if we have backlog, try to process it now yet. */
 
-		if (copied >= target && !sk->sk_backlog.tail)
+		if (copied >= target && !sk->sk_backlog.tail) {
+			Message_recv("backlog");
 			break;
+		}
 
 		if (copied) {
+			Message_recv("copied");
+
 			if (sk->sk_err ||
 			    sk->sk_state == TCP_CLOSE ||
 			    (sk->sk_shutdown & RCV_SHUTDOWN) ||
 			    !timeo ||
-			    signal_pending(current))
+			    signal_pending(current)) {
+				Message_recv("break");
 				break;
+			}
 		} else {
+			Message_recv("");//4
 			if (sock_flag(sk, SOCK_DONE))
 				break;
 
@@ -1734,8 +1750,10 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		tcp_cleanup_rbuf(sk, copied);
 
 		if (!sysctl_tcp_low_latency && tp->ucopy.task == user_recv) {
+			Message_recv("");//5
 			/* Install new reader */
 			if (!user_recv && !(flags & (MSG_TRUNC | MSG_PEEK))) {
+				Message_recv("");//6
 				user_recv = current;
 				tp->ucopy.task = user_recv;
 				tp->ucopy.iov = msg->msg_iov;
@@ -1801,11 +1819,13 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 #endif
 
 		if (user_recv) {
+			Message_recv("inside user_recv");//6:
 			int chunk;
 
 			/* __ Restore normal policy in scheduler __ */
 
 			if ((chunk = len - tp->ucopy.len) != 0) {
+				Message_recv("");//7
 				NET_ADD_STATS_USER(sock_net(sk), LINUX_MIB_TCPDIRECTCOPYFROMBACKLOG, chunk);
 				len -= chunk;
 				copied += chunk;
@@ -1814,6 +1834,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			if (tp->rcv_nxt == tp->copied_seq &&
 			    !skb_queue_empty(&tp->ucopy.prequeue)) {
 do_prequeue:
+				Message_recv("do_prequeue");
 				tcp_prequeue_process(sk);
 
 				if ((chunk = len - tp->ucopy.len) != 0) {
@@ -1825,14 +1846,17 @@ do_prequeue:
 		}
 		if ((flags & MSG_PEEK) &&
 		    (peek_seq - copied - urg_hole != tp->copied_seq)) {
+			Message_recv("MSG_PEEK");
 			net_dbg_ratelimited("TCP(%s:%d): Application bug, race in MSG_PEEK\n",
 					    current->comm,
 					    task_pid_nr(current));
 			peek_seq = tp->copied_seq;
 		}
+		Message_recv("above continue");
 		continue;
 
 	found_ok_skb:
+		Message_recv("found ok skb");
 		/* Ok so how much can we use? */
 		used = skb->len - offset;
 		if (len < used)
@@ -1840,6 +1864,7 @@ do_prequeue:
 
 		/* Do we have urgent data here? */
 		if (tp->urg_data) {
+			Message_recv("urgent data?");
 			u32 urg_offset = tp->urg_seq - *seq;
 			if (urg_offset < used) {
 				if (!urg_offset) {
@@ -1857,6 +1882,7 @@ do_prequeue:
 		}
 
 		if (!(flags & MSG_TRUNC)) {
+			Message_recv("");
 #ifdef CONFIG_NET_DMA
 			if (!tp->ucopy.dma_chan && tp->ucopy.pinned_list)
 				tp->ucopy.dma_chan = net_dma_find_channel();
@@ -1886,6 +1912,7 @@ do_prequeue:
 			} else
 #endif
 			{
+				Message_recv("");
 				err = skb_copy_datagram_iovec(skb, offset,
 						msg->msg_iov, used);
 				if (err) {
@@ -1897,6 +1924,7 @@ do_prequeue:
 			}
 		}
 
+		Message_recv("");
 		*seq += used;
 		copied += used;
 		len -= used;
