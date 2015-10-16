@@ -1,0 +1,9 @@
+if pkt is coming from em1 or lu-br0 then dont print anything
+
+my_stuff:-
+
+1. printout/
+it has path to all the necessary struct.
+
+2. dev.c
+it is good dump of all the pkts coming in the tx fast path.
