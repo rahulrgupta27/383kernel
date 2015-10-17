@@ -282,7 +282,7 @@
 
 #define Message(a, b...)        //printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b) 
 #define Message1(a, b...)        //printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b) 
-#define Message_recv(a, b...)        printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b) 
+#define Message_recv(a, b...)        //printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b) 
 int sysctl_tcp_fin_timeout __read_mostly = TCP_FIN_TIMEOUT;
 
 struct percpu_counter tcp_orphan_count;

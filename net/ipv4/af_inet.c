@@ -121,6 +121,8 @@
 
 
 #define Message_recv(a, b...)        printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b)
+#define Message_Fastpath(a, b...)        //printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b)
+
 /* The inetsw table contains everything that inet_create needs to
  * build a new socket.
  */
@@ -781,7 +783,7 @@ int inet_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 	struct sock *sk = sock->sk;
 
 	sock_rps_record_flow(sk);
-	printk("inet_sendmsg: entered: msghdr=%llx, size=%d\n", msg, size);
+	Message_Fastpath("inet_sendmsg: entered: msghdr=%llx, size=%d\n", msg, size);
 
 	/* We may need to bind the socket. */
 	if (!inet_sk(sk)->inet_num && !sk->sk_prot->no_autobind &&
@@ -816,7 +818,7 @@ int inet_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 	struct sock *sk = sock->sk;
 	int addr_len = 0;
 	int err;
-	Message_recv("");
+	//Message_recv("");
 
 	sock_rps_record_flow(sk);
 

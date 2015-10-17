@@ -143,7 +143,25 @@
 
 /* This should be increased if a protocol with a bigger head is added. */
 #define GRO_MAX_HEAD (MAX_HEADER + 128)
+
+#include <linux/string.h>
+#define MGMT_DEV "em1"
+#define MGMT_BR	"lu-br0"
+#define MGMT_TAP	"vnet0"
+#define MGMT_TAP1	"vnet1"
+#define LO	"lo"
 #define Message_recv(a, b...)     printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b) 
+#define Message_tx(a, b...)     printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b) 
+
+inline int is_not_mgmt_port(struct sk_buff *skb)
+{
+	if ( !((!strcmp(skb->dev->name, MGMT_DEV)) || (!strcmp(skb->dev->name, MGMT_BR)) || (!strcmp(skb->dev->name, MGMT_TAP)) || (!strcmp(skb->dev->name, LO)) || (!strcmp(skb->dev->name, MGMT_TAP1))) )	
+		return 1;
+	else
+		return 0;
+}
+
+
 /*
  *	The list of packet types we will receive (as opposed to discard)
  *	and the routines to invoke.
@@ -2527,6 +2545,8 @@ struct netdev_queue *netdev_pick_tx(struct net_device *dev,
 			}
 		}
 	}
+	if (is_not_mgmt_port(skb))
+		Message_tx("KERN: completed q select, return q-id=%d", queue_index);
 
 	skb_set_queue_mapping(skb, queue_index);
 	return netdev_get_tx_queue(dev, queue_index);
@@ -2669,6 +2689,9 @@ int dev_queue_xmit(struct sk_buff *skb)
 	rcu_read_lock_bh();
 
 	skb_update_prio(skb);
+        if (is_not_mgmt_port(skb)) {
+		Message_tx(" skb->dev->name %s, Calling tx q select", skb->dev->name);
+	}
 
 	txq = netdev_pick_tx(dev, skb);
 	q = rcu_dereference_bh(txq->qdisc);
@@ -2678,7 +2701,36 @@ int dev_queue_xmit(struct sk_buff *skb)
 #endif
 	trace_net_dev_queue(skb);
 	if (q->enqueue) {
+        if (is_not_mgmt_port(skb)) {
+			Message_tx("calling hard xmit: dev=%llx, %s", dev, dev->name);
+			uint16_t eth_type; 
+			eth_type = ntohs(*(uint16_t *)(skb->data + 12));
+			struct iphdr *iphdr;
+			int proto;
+			struct tcphdr *l4hdr;
+			int l4offset;
+			Message_tx("eth_type=%d", eth_type);
+
+			if (eth_type == 0x800) { 	//ip
+				//printk("eth_type == 0x800\n");
+				iphdr = (struct iphdr *)(skb->data + 14);
+				proto = iphdr->protocol;
+				Message_tx("proto=%d", proto);
+				if (proto == 0x6 || proto == 0x11) {
+					l4offset = 14 + (iphdr->ihl*4);
+					l4hdr = (struct tcphdr *)(skb->data + l4offset);
+					Message_tx("Tx : dest_tcp_port=%d, src_tcp_port=%d, qset-id=?"
+							" FLAGS:syn=%d, ack=%d, push=%d, urgent=%d, reset=%d, fin=%d, length=%d, port=%s", 
+							htons(l4hdr->dest), htons(l4hdr->source),
+							l4hdr->syn, l4hdr->ack, l4hdr->psh, 
+							l4hdr->urg, l4hdr->rst, l4hdr->fin, htons(iphdr->tot_len), dev->name);
+				}
+			}
+
+		}
 		rc = __dev_xmit_skb(skb, q, dev, txq);
+		        if (is_not_mgmt_port(skb))
+			Message_tx("calling complete, %s\n", dev->name);
 		goto out;
 	}
 
@@ -3076,11 +3128,14 @@ enqueue:
 int netif_rx(struct sk_buff *skb)
 {
 	int ret;
-	Message_recv("");
+        if (is_not_mgmt_port(skb)) {
+		Message_recv("");
+	}
 
 	/* if netpoll wants it, pretend we never saw it */
 	if (netpoll_rx(skb)) {
-		Message_recv("");
+		if (is_not_mgmt_port(skb)) 
+			Message_recv("");
 		return NET_RX_DROP;
 	}
 
@@ -3088,7 +3143,9 @@ int netif_rx(struct sk_buff *skb)
 
 	trace_netif_rx(skb);
 #ifdef CONFIG_RPS
-	Message_recv("");
+        if (is_not_mgmt_port(skb)) {
+		Message_recv("");
+	}
 	if (static_key_false(&rps_needed)) {
 		struct rps_dev_flow voidflow, *rflow = &voidflow;
 		int cpu;
@@ -3107,6 +3164,7 @@ int netif_rx(struct sk_buff *skb)
 	} else
 #endif
 	{
+        if (is_not_mgmt_port(skb)) 
 		Message_recv("");
 		unsigned int qtail;
 		ret = enqueue_to_backlog(skb, get_cpu(), &qtail);
@@ -3365,7 +3423,8 @@ static int __netif_receive_skb(struct sk_buff *skb)
 	rcu_read_lock();
 
 another_round:
-	Message_recv("another_round");
+        if (is_not_mgmt_port(skb)) 
+		Message_recv("another_round");
 	skb->skb_iif = skb->dev->ifindex;
 
 	__this_cpu_inc(softnet_data.processed);
@@ -3495,13 +3554,17 @@ out:
 int netif_receive_skb(struct sk_buff *skb)
 {
 	net_timestamp_check(netdev_tstamp_prequeue, skb);
-	Message_recv("entering");
+	if (is_not_mgmt_port(skb)) {
+		Message_recv("entering : dev=%s", skb->dev->name);
+	}
 
 	if (skb_defer_rx_timestamp(skb))
 		return NET_RX_SUCCESS;
 
 #ifdef CONFIG_RPS
-	Message_recv("CONFIG_RPS");
+        if (is_not_mgmt_port(skb)) {
+		Message_recv("CONFIG_RPS");
+	}
 	if (static_key_false(&rps_needed)) {
 		struct rps_dev_flow voidflow, *rflow = &voidflow;
 		int cpu, ret;
@@ -3511,7 +3574,9 @@ int netif_receive_skb(struct sk_buff *skb)
 		cpu = get_rps_cpu(skb->dev, skb, &rflow);
 
 		if (cpu >= 0) {
-			Message_recv("cpu>=0");
+			if (is_not_mgmt_port(skb)) {
+				Message_recv("cpu>=0");
+			}
 			ret = enqueue_to_backlog(skb, cpu, &rflow->last_qtail);
 			rcu_read_unlock();
 			return ret;
