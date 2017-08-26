@@ -143,7 +143,7 @@
 
 /* This should be increased if a protocol with a bigger head is added. */
 #define GRO_MAX_HEAD (MAX_HEADER + 128)
-
+#define Message_recv(a, b...)     printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b) 
 /*
  *	The list of packet types we will receive (as opposed to discard)
  *	and the routines to invoke.
@@ -3076,15 +3076,19 @@ enqueue:
 int netif_rx(struct sk_buff *skb)
 {
 	int ret;
+	Message_recv("");
 
 	/* if netpoll wants it, pretend we never saw it */
-	if (netpoll_rx(skb))
+	if (netpoll_rx(skb)) {
+		Message_recv("");
 		return NET_RX_DROP;
+	}
 
 	net_timestamp_check(netdev_tstamp_prequeue, skb);
 
 	trace_netif_rx(skb);
 #ifdef CONFIG_RPS
+	Message_recv("");
 	if (static_key_false(&rps_needed)) {
 		struct rps_dev_flow voidflow, *rflow = &voidflow;
 		int cpu;
@@ -3103,6 +3107,7 @@ int netif_rx(struct sk_buff *skb)
 	} else
 #endif
 	{
+		Message_recv("");
 		unsigned int qtail;
 		ret = enqueue_to_backlog(skb, get_cpu(), &qtail);
 		put_cpu();
@@ -3360,6 +3365,7 @@ static int __netif_receive_skb(struct sk_buff *skb)
 	rcu_read_lock();
 
 another_round:
+	Message_recv("another_round");
 	skb->skb_iif = skb->dev->ifindex;
 
 	__this_cpu_inc(softnet_data.processed);
@@ -3489,11 +3495,13 @@ out:
 int netif_receive_skb(struct sk_buff *skb)
 {
 	net_timestamp_check(netdev_tstamp_prequeue, skb);
+	Message_recv("entering");
 
 	if (skb_defer_rx_timestamp(skb))
 		return NET_RX_SUCCESS;
 
 #ifdef CONFIG_RPS
+	Message_recv("CONFIG_RPS");
 	if (static_key_false(&rps_needed)) {
 		struct rps_dev_flow voidflow, *rflow = &voidflow;
 		int cpu, ret;
@@ -3503,6 +3511,7 @@ int netif_receive_skb(struct sk_buff *skb)
 		cpu = get_rps_cpu(skb->dev, skb, &rflow);
 
 		if (cpu >= 0) {
+			Message_recv("cpu>=0");
 			ret = enqueue_to_backlog(skb, cpu, &rflow->last_qtail);
 			rcu_read_unlock();
 			return ret;

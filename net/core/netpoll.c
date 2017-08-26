@@ -563,6 +563,7 @@ int __netpoll_rx(struct sk_buff *skb, struct netpoll_info *npinfo)
 	const struct iphdr *iph;
 	struct udphdr *uh;
 	struct netpoll *np, *tmp;
+	printk("__netpoll_rx : entering");
 
 	if (list_empty(&npinfo->rx_np))
 		goto out;

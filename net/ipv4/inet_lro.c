@@ -498,6 +498,7 @@ void lro_receive_skb(struct net_lro_mgr *lro_mgr,
 		     struct sk_buff *skb,
 		     void *priv)
 {
+	printk("lro_receive_skb : entering");
 	if (__lro_proc_skb(lro_mgr, skb, priv)) {
 		if (lro_mgr->features & LRO_F_NAPI)
 			netif_receive_skb(skb);
