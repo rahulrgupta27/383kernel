@@ -1,0 +1,15 @@
+git config --global user.name "Rahul Gupta"
+git config --global user.email "rahulrgupta27@gmail.com"
+
+git remote add origin1 https://github.com/rahulrgupta27/383kernel.git
+git push -u origin1 master
+
+For changing last commit email id:-
+git commit --amend --author="Rahul Gupta <rahulrgupta27@gmail.com>"
+
+For changing multiple last commit email id:-
+git reset --soft 411096c7260b6a976bd93810010c0c1f116c479b
+git diff --cached
+git commit -a -m "tmp"
+
+
