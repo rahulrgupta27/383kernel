@@ -642,7 +642,7 @@ int sock_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 	struct sock_iocb siocb;
 	int ret;
 
-	printk("\nsock_sendmsg: entering: size=%d, msg=%llx\n", size, msg);
+	printk("sock_sendmsg: entering: size=%d, msg=%llx\n", size, msg);
 	init_sync_kiocb(&iocb, NULL);
 	iocb.private = &siocb;
 	ret = __sock_sendmsg(&iocb, sock, msg, size);

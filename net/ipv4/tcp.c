@@ -281,6 +281,7 @@
 #include <asm/ioctls.h>
 
 #define Message(a, b...)        printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b) 
+#define Message1(a, b...)        printk("[%s @ %d] :"a"\n", __FUNCTION__, __LINE__, ##b) 
 int sysctl_tcp_fin_timeout __read_mostly = TCP_FIN_TIMEOUT;
 
 struct percpu_counter tcp_orphan_count;
@@ -1075,6 +1076,7 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	clear_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
 
 	mss_now = tcp_send_mss(sk, &size_goal, flags);
+	Message("mss_node=%d", mss_now);
 
 	/* Ok commence sending. */
 	iovlen = msg->msg_iovlen;
@@ -1111,6 +1113,8 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 				if (skb->ip_summed == CHECKSUM_NONE)
 					max = mss_now;
 				copy = max - skb->len;
+			//	Message("skb sufficient to handle data,"
+			//	       "no new page needed copy=%d, max=%d", copy, max);
 			}
 
 			if (copy <= 0) {
@@ -1166,7 +1170,7 @@ new_segment:
 					}
 					merge = false;
 				}
-
+				/* rgrg copy pkt/data to a page*/
 				copy = min_t(int, copy, pfrag->size - pfrag->offset);
 
 				if (!sk_wmem_schedule(sk, copy))
@@ -1208,10 +1212,13 @@ new_segment:
 				continue;
 
 			if (forced_push(tp)) {
+				Message1("");
 				tcp_mark_push(tp, skb);
 				__tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);
-			} else if (skb == tcp_send_head(sk))
+			} else if (skb == tcp_send_head(sk)) {
+				Message1("");
 				tcp_push_one(sk, mss_now);
+			}
 			continue;
 
 wait_for_sndbuf:
@@ -1226,6 +1233,7 @@ wait_for_memory:
 			mss_now = tcp_send_mss(sk, &size_goal, flags);
 		}
 	}
+	Message("exit\n");
 
 out:
 	if (copied)
