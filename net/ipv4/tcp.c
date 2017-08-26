@@ -1036,13 +1036,13 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	//Message("entered: msg=%llx, size=%d, msg_name=%c", msg, size, 
 	//		*((char*)(msg->msg_name)));
 
-	Message("");
+	Message("entered: msg=0x%llx, size=%d", msg, size);	//ok1
 	//printk("tcp_sendmsg: entered: msg=%llx, size=%d, msg_name=%c", msg, size, *((char*)(msg->msg_name)));
 	lock_sock(sk);
 
 	flags = msg->msg_flags;
 	if (flags & MSG_FASTOPEN) {
-		Message("");
+		Message("");		//no
 		err = tcp_sendmsg_fastopen(sk, msg, &copied_syn);
 		if (err == -EINPROGRESS && copied_syn > 0)
 			goto out;
@@ -1059,6 +1059,8 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	 */
 	if (((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT)) &&
 	    !tcp_passive_fastopen(sk)) {
+		Message("Wait for a conenction to finish: sk->sk_state=%x",
+				sk->sk_state);
 		if ((err = sk_stream_wait_connect(sk, &timeo)) != 0)
 			goto do_error;
 	}
@@ -1080,12 +1082,12 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	clear_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
 
 	mss_now = tcp_send_mss(sk, &size_goal, flags);
-	Message("mss_node=%d", mss_now);
 
 	/* Ok commence sending. */
 	iovlen = msg->msg_iovlen;
 	iov = msg->msg_iov;
 	copied = 0;
+	Message("mss_now=%d, iovlen=%d", mss_now, iovlen);
 
 	err = -EPIPE;
 	if (sk->sk_err || (sk->sk_shutdown & SEND_SHUTDOWN))
@@ -1093,9 +1095,13 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 	sg = !!(sk->sk_route_caps & NETIF_F_SG);
 
-	while (--iovlen >= 0) {
+	while (--iovlen >= 0) {		//outer loop
 		size_t seglen = iov->iov_len;
 		unsigned char __user *from = iov->iov_base;
+		Message("Risky: userspace buffer addr=0x%llx", from);
+		Message("msg_iov=%x, msg_iovlen=%d,"
+			"iov->base_addr=%llx, iov->iovlen=%d",
+			iov, iovlen, from, seglen);
 
 		iov++;
 		if (unlikely(offset > 0)) {  /* Skip bytes copied in SYN */
@@ -1108,7 +1114,7 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			offset = 0;
 		}
 
-		while (seglen > 0) {
+		while (seglen > 0) {	//inner loop
 			int copy = 0;
 			int max = size_goal;
 
@@ -1135,6 +1141,8 @@ new_segment:
 							  sk->sk_allocation);
 				if (!skb)
 					goto wait_for_memory;
+				Message("select_size(sk, sg)=%d",
+						select_size(sk, sg));
 
 				/*
 				 * Check whether we can use HW checksum.
@@ -1146,6 +1154,7 @@ new_segment:
 				copy = size_goal;
 				max = size_goal;
 			}
+			Message("");
 
 			/* Try to append data to the end of skb. */
 			if (copy > seglen)
@@ -1162,6 +1171,8 @@ new_segment:
 				bool merge = true;
 				int i = skb_shinfo(skb)->nr_frags;
 				struct page_frag *pfrag = sk_page_frag(sk);
+				Message("else no space in skb head,"
+					       "allocate page pfrag = %llx", pfrag);
 
 				if (!sk_page_frag_refill(sk, pfrag))
 					goto wait_for_memory;
@@ -1173,8 +1184,10 @@ new_segment:
 						goto new_segment;
 					}
 					merge = false;
+					Message("!skb_can_coalesce: merge=%d",
+							merge);
 				}
-				/* rgrg copy pkt/data to a page*/
+				/* rgrg copy pkt/data from "from pointer" to a "page"*/
 				copy = min_t(int, copy, pfrag->size - pfrag->offset);
 
 				if (!sk_wmem_schedule(sk, copy))
@@ -1184,7 +1197,7 @@ new_segment:
 							       pfrag->page,
 							       pfrag->offset,
 							       copy);
-				Message("copy=%d", copy);
+				Message("skb_copy_to_page_nocache copy=%d", copy);
 				if (err)
 					goto do_error;
 
@@ -1208,7 +1221,7 @@ new_segment:
 
 			from += copy;
 			copied += copy;
-			Message("copied=%d", copied);
+			Message("from=0x%llx copied=%d, copy=%d", copied, copy, from);
 			if ((seglen -= copy) == 0 && iovlen == 0)
 				goto out;
 
@@ -1226,8 +1239,10 @@ new_segment:
 			continue;
 
 wait_for_sndbuf:
+			Message("");
 			set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
 wait_for_memory:
+			Message("");
 			if (copied)
 				tcp_push(sk, flags & ~MSG_MORE, mss_now, TCP_NAGLE_PUSH);
 
