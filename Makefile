@@ -1,7 +1,7 @@
 VERSION = 3
 PATCHLEVEL = 8
 SUBLEVEL = 3
-EXTRAVERSION = tcp_ip_printk
+EXTRAVERSION = tcp_ip_printk_github
 NAME = Unicycling Gorilla
 
 # *DOCUMENTATION*
