@@ -145,7 +145,8 @@
 #define GRO_MAX_HEAD (MAX_HEADER + 128)
 
 #include <linux/string.h>
-#define MGMT_DEV "em1"
+//#define MGMT_DEV "em1"
+#define MGMT_DEV "eth3"
 #define MGMT_BR	"lu-br0"
 #define MGMT_TAP	"vnet0"
 #define MGMT_TAP1	"vnet1"

@@ -1051,710 +1051,95 @@ continue_unlock:
 				int mark = !is_checkpointed_node(sbi, ino);
 				set_fsync_mark(page, 1);
 				if (IS_INODE(page))
-					set_dentry_mark(page, mark);
-				nwritten++;
-			} else {
-				set_fsync_mark(page, 0);
-				set_dentry_mark(page, 0);
-			}
-			mapping->a_ops->writepage(page, wbc);
-			wrote++;
-
-			if (--wbc->nr_to_write == 0)
-				break;
-		}
-		pagevec_release(&pvec);
-		cond_resched();
-
-		if (wbc->nr_to_write == 0) {
-			step = 2;
-			break;
-		}
-	}
-
-	if (step < 2) {
-		step++;
-		goto next_step;
-	}
-
-	if (wrote)
-		f2fs_submit_bio(sbi, NODE, wbc->sync_mode == WB_SYNC_ALL);
-
-	return nwritten;
-}
-
-static int f2fs_write_node_page(struct page *page,
-				struct writeback_control *wbc)
-{
-	struct f2fs_sb_info *sbi = F2FS_SB(page->mapping->host->i_sb);
-	nid_t nid;
-	block_t new_addr;
-	struct node_info ni;
-
-	if (wbc->for_reclaim) {
-		dec_page_count(sbi, F2FS_DIRTY_NODES);
-		wbc->pages_skipped++;
-		set_page_dirty(page);
-		return AOP_WRITEPAGE_ACTIVATE;
-	}
-
-	wait_on_page_writeback(page);
-
-	mutex_lock_op(sbi, NODE_WRITE);
-
-	/* get old block addr of this node page */
-	nid = nid_of_node(page);
-	BUG_ON(page->index != nid);
-
-	get_node_info(sbi, nid, &ni);
-
-	/* This page is already truncated */
-	if (ni.blk_addr == NULL_ADDR)
-		return 0;
-
-	set_page_writeback(page);
-
-	/* insert node offset */
-	write_node_page(sbi, page, nid, ni.blk_addr, &new_addr);
-	set_node_addr(sbi, &ni, new_addr);
-	dec_page_count(sbi, F2FS_DIRTY_NODES);
-
-	mutex_unlock_op(sbi, NODE_WRITE);
-	unlock_page(page);
-	return 0;
-}
-
-/*
- * It is very important to gather dirty pages and write at once, so that we can
- * submit a big bio without interfering other data writes.
- * Be default, 512 pages (2MB), a segment size, is quite reasonable.
- */
-#define COLLECT_DIRTY_NODES	512
-static int f2fs_write_node_pages(struct address_space *mapping,
-			    struct writeback_control *wbc)
-{
-	struct f2fs_sb_info *sbi = F2FS_SB(mapping->host->i_sb);
-	struct block_device *bdev = sbi->sb->s_bdev;
-	long nr_to_write = wbc->nr_to_write;
-
-	/* First check balancing cached NAT entries */
-	if (try_to_free_nats(sbi, NAT_ENTRY_PER_BLOCK)) {
-		write_checkpoint(sbi, false, false);
-		return 0;
-	}
-
-	/* collect a number of dirty node pages and write together */
-	if (get_pages(sbi, F2FS_DIRTY_NODES) < COLLECT_DIRTY_NODES)
-		return 0;
-
-	/* if mounting is failed, skip writing node pages */
-	wbc->nr_to_write = bio_get_nr_vecs(bdev);
-	sync_node_pages(sbi, 0, wbc);
-	wbc->nr_to_write = nr_to_write -
-		(bio_get_nr_vecs(bdev) - wbc->nr_to_write);
-	return 0;
-}
-
-static int f2fs_set_node_page_dirty(struct page *page)
-{
-	struct address_space *mapping = page->mapping;
-	struct f2fs_sb_info *sbi = F2FS_SB(mapping->host->i_sb);
-
-	SetPageUptodate(page);
-	if (!PageDirty(page)) {
-		__set_page_dirty_nobuffers(page);
-		inc_page_count(sbi, F2FS_DIRTY_NODES);
-		SetPagePrivate(page);
-		return 1;
-	}
-	return 0;
-}
-
-static void f2fs_invalidate_node_page(struct page *page, unsigned long offset)
-{
-	struct inode *inode = page->mapping->host;
-	struct f2fs_sb_info *sbi = F2FS_SB(inode->i_sb);
-	if (PageDirty(page))
-		dec_page_count(sbi, F2FS_DIRTY_NODES);
-	ClearPagePrivate(page);
-}
-
-static int f2fs_release_node_page(struct page *page, gfp_t wait)
-{
-	ClearPagePrivate(page);
-	return 0;
-}
-
-/*
- * Structure of the f2fs node operations
- */
-const struct address_space_operations f2fs_node_aops = {
-	.writepage	= f2fs_write_node_page,
-	.writepages	= f2fs_write_node_pages,
-	.set_page_dirty	= f2fs_set_node_page_dirty,
-	.invalidatepage	= f2fs_invalidate_node_page,
-	.releasepage	= f2fs_release_node_page,
-};
-
-static struct free_nid *__lookup_free_nid_list(nid_t n, struct list_head *head)
-{
-	struct list_head *this;
-	struct free_nid *i = NULL;
-	list_for_each(this, head) {
-		i = list_entry(this, struct free_nid, list);
-		if (i->nid == n)
-			break;
-		i = NULL;
-	}
-	return i;
-}
-
-static void __del_from_free_nid_list(struct free_nid *i)
-{
-	list_del(&i->list);
-	kmem_cache_free(free_nid_slab, i);
-}
-
-static int add_free_nid(struct f2fs_nm_info *nm_i, nid_t nid)
-{
-	struct free_nid *i;
-
-	if (nm_i->fcnt > 2 * MAX_FREE_NIDS)
-		return 0;
-retry:
-	i = kmem_cache_alloc(free_nid_slab, GFP_NOFS);
-	if (!i) {
-		cond_resched();
-		goto retry;
-	}
-	i->nid = nid;
-	i->state = NID_NEW;
-
-	spin_lock(&nm_i->free_nid_list_lock);
-	if (__lookup_free_nid_list(nid, &nm_i->free_nid_list)) {
-		spin_unlock(&nm_i->free_nid_list_lock);
-		kmem_cache_free(free_nid_slab, i);
-		return 0;
-	}
-	list_add_tail(&i->list, &nm_i->free_nid_list);
-	nm_i->fcnt++;
-	spin_unlock(&nm_i->free_nid_list_lock);
-	return 1;
-}
-
-static void remove_free_nid(struct f2fs_nm_info *nm_i, nid_t nid)
-{
-	struct free_nid *i;
-	spin_lock(&nm_i->free_nid_list_lock);
-	i = __lookup_free_nid_list(nid, &nm_i->free_nid_list);
-	if (i && i->state == NID_NEW) {
-		__del_from_free_nid_list(i);
-		nm_i->fcnt--;
-	}
-	spin_unlock(&nm_i->free_nid_list_lock);
-}
-
-static int scan_nat_page(struct f2fs_nm_info *nm_i,
-			struct page *nat_page, nid_t start_nid)
-{
-	struct f2fs_nat_block *nat_blk = page_address(nat_page);
-	block_t blk_addr;
-	int fcnt = 0;
-	int i;
-
-	/* 0 nid should not be used */
-	if (start_nid == 0)
-		++start_nid;
-
-	i = start_nid % NAT_ENTRY_PER_BLOCK;
-
-	for (; i < NAT_ENTRY_PER_BLOCK; i++, start_nid++) {
-		blk_addr  = le32_to_cpu(nat_blk->entries[i].block_addr);
-		BUG_ON(blk_addr == NEW_ADDR);
-		if (blk_addr == NULL_ADDR)
-			fcnt += add_free_nid(nm_i, start_nid);
-	}
-	return fcnt;
-}
-
-static void build_free_nids(struct f2fs_sb_info *sbi)
-{
-	struct free_nid *fnid, *next_fnid;
-	struct f2fs_nm_info *nm_i = NM_I(sbi);
-	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
-	struct f2fs_summary_block *sum = curseg->sum_blk;
-	nid_t nid = 0;
-	bool is_cycled = false;
-	int fcnt = 0;
-	int i;
-
-	nid = nm_i->next_scan_nid;
-	nm_i->init_scan_nid = nid;
-
-	ra_nat_pages(sbi, nid);
-
-	while (1) {
-		struct page *page = get_current_nat_page(sbi, nid);
-
-		fcnt += scan_nat_page(nm_i, page, nid);
-		f2fs_put_page(page, 1);
-
-		nid += (NAT_ENTRY_PER_BLOCK - (nid % NAT_ENTRY_PER_BLOCK));
-
-		if (nid >= nm_i->max_nid) {
-			nid = 0;
-			is_cycled = true;
-		}
-		if (fcnt > MAX_FREE_NIDS)
-			break;
-		if (is_cycled && nm_i->init_scan_nid <= nid)
-			break;
-	}
-
-	nm_i->next_scan_nid = nid;
-
-	/* find free nids from current sum_pages */
-	mutex_lock(&curseg->curseg_mutex);
-	for (i = 0; i < nats_in_cursum(sum); i++) {
-		block_t addr = le32_to_cpu(nat_in_journal(sum, i).block_addr);
-		nid = le32_to_cpu(nid_in_journal(sum, i));
-		if (addr == NULL_ADDR)
-			add_free_nid(nm_i, nid);
-		else
-			remove_free_nid(nm_i, nid);
-	}
-	mutex_unlock(&curseg->curseg_mutex);
-
-	/* remove the free nids from current allocated nids */
-	list_for_each_entry_safe(fnid, next_fnid, &nm_i->free_nid_list, list) {
-		struct nat_entry *ne;
-
-		read_lock(&nm_i->nat_tree_lock);
-		ne = __lookup_nat_cache(nm_i, fnid->nid);
-		if (ne && nat_get_blkaddr(ne) != NULL_ADDR)
-			remove_free_nid(nm_i, fnid->nid);
-		read_unlock(&nm_i->nat_tree_lock);
-	}
-}
-
-/*
- * If this function returns success, caller can obtain a new nid
- * from second parameter of this function.
- * The returned nid could be used ino as well as nid when inode is created.
- */
-bool alloc_nid(struct f2fs_sb_info *sbi, nid_t *nid)
-{
-	struct f2fs_nm_info *nm_i = NM_I(sbi);
-	struct free_nid *i = NULL;
-	struct list_head *this;
-retry:
-	mutex_lock(&nm_i->build_lock);
-	if (!nm_i->fcnt) {
-		/* scan NAT in order to build free nid list */
-		build_free_nids(sbi);
-		if (!nm_i->fcnt) {
-			mutex_unlock(&nm_i->build_lock);
-			return false;
-		}
-	}
-	mutex_unlock(&nm_i->build_lock);
-
-	/*
-	 * We check fcnt again since previous check is racy as
-	 * we didn't hold free_nid_list_lock. So other thread
-	 * could consume all of free nids.
-	 */
-	spin_lock(&nm_i->free_nid_list_lock);
-	if (!nm_i->fcnt) {
-		spin_unlock(&nm_i->free_nid_list_lock);
-		goto retry;
-	}
-
-	BUG_ON(list_empty(&nm_i->free_nid_list));
-	list_for_each(this, &nm_i->free_nid_list) {
-		i = list_entry(this, struct free_nid, list);
-		if (i->state == NID_NEW)
-			break;
-	}
-
-	BUG_ON(i->state != NID_NEW);
-	*nid = i->nid;
-	i->state = NID_ALLOC;
-	nm_i->fcnt--;
-	spin_unlock(&nm_i->free_nid_list_lock);
-	return true;
-}
-
-/*
- * alloc_nid() should be called prior to this function.
- */
-void alloc_nid_done(struct f2fs_sb_info *sbi, nid_t nid)
-{
-	struct f2fs_nm_info *nm_i = NM_I(sbi);
-	struct free_nid *i;
-
-	spin_lock(&nm_i->free_nid_list_lock);
-	i = __lookup_free_nid_list(nid, &nm_i->free_nid_list);
-	if (i) {
-		BUG_ON(i->state != NID_ALLOC);
-		__del_from_free_nid_list(i);
-	}
-	spin_unlock(&nm_i->free_nid_list_lock);
-}
-
-/*
- * alloc_nid() should be called prior to this function.
- */
-void alloc_nid_failed(struct f2fs_sb_info *sbi, nid_t nid)
-{
-	alloc_nid_done(sbi, nid);
-	add_free_nid(NM_I(sbi), nid);
-}
-
-void recover_node_page(struct f2fs_sb_info *sbi, struct page *page,
-		struct f2fs_summary *sum, struct node_info *ni,
-		block_t new_blkaddr)
-{
-	rewrite_node_page(sbi, page, sum, ni->blk_addr, new_blkaddr);
-	set_node_addr(sbi, ni, new_blkaddr);
-	clear_node_page_dirty(page);
-}
-
-int recover_inode_page(struct f2fs_sb_info *sbi, struct page *page)
-{
-	struct address_space *mapping = sbi->node_inode->i_mapping;
-	struct f2fs_node *src, *dst;
-	nid_t ino = ino_of_node(page);
-	struct node_info old_ni, new_ni;
-	struct page *ipage;
-
-	ipage = grab_cache_page(mapping, ino);
-	if (!ipage)
-		return -ENOMEM;
-
-	/* Should not use this inode  from free nid list */
-	remove_free_nid(NM_I(sbi), ino);
-
-	get_node_info(sbi, ino, &old_ni);
-	SetPageUptodate(ipage);
-	fill_node_footer(ipage, ino, ino, 0, true);
-
-	src = (struct f2fs_node *)page_address(page);
-	dst = (struct f2fs_node *)page_address(ipage);
-
-	memcpy(dst, src, (unsigned long)&src->i.i_ext - (unsigned long)&src->i);
-	dst->i.i_size = 0;
-	dst->i.i_blocks = cpu_to_le64(1);
-	dst->i.i_links = cpu_to_le32(1);
-	dst->i.i_xattr_nid = 0;
-
-	new_ni = old_ni;
-	new_ni.ino = ino;
-
-	set_node_addr(sbi, &new_ni, NEW_ADDR);
-	inc_valid_inode_count(sbi);
-
-	f2fs_put_page(ipage, 1);
-	return 0;
-}
-
-int restore_node_summary(struct f2fs_sb_info *sbi,
-			unsigned int segno, struct f2fs_summary_block *sum)
-{
-	struct f2fs_node *rn;
-	struct f2fs_summary *sum_entry;
-	struct page *page;
-	block_t addr;
-	int i, last_offset;
-
-	/* alloc temporal page for read node */
-	page = alloc_page(GFP_NOFS | __GFP_ZERO);
-	if (IS_ERR(page))
-		return PTR_ERR(page);
-	lock_page(page);
-
-	/* scan the node segment */
-	last_offset = sbi->blocks_per_seg;
-	addr = START_BLOCK(sbi, segno);
-	sum_entry = &sum->entries[0];
-
-	for (i = 0; i < last_offset; i++, sum_entry++) {
-		if (f2fs_readpage(sbi, page, addr, READ_SYNC))
-			goto out;
-
-		rn = (struct f2fs_node *)page_address(page);
-		sum_entry->nid = rn->footer.nid;
-		sum_entry->version = 0;
-		sum_entry->ofs_in_node = 0;
-		addr++;
-
-		/*
-		 * In order to read next node page,
-		 * we must clear PageUptodate flag.
-		 */
-		ClearPageUptodate(page);
-	}
-out:
-	unlock_page(page);
-	__free_pages(page, 0);
-	return 0;
-}
-
-static bool flush_nats_in_journal(struct f2fs_sb_info *sbi)
-{
-	struct f2fs_nm_info *nm_i = NM_I(sbi);
-	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
-	struct f2fs_summary_block *sum = curseg->sum_blk;
-	int i;
-
-	mutex_lock(&curseg->curseg_mutex);
-
-	if (nats_in_cursum(sum) < NAT_JOURNAL_ENTRIES) {
-		mutex_unlock(&curseg->curseg_mutex);
-		return false;
-	}
-
-	for (i = 0; i < nats_in_cursum(sum); i++) {
-		struct nat_entry *ne;
-		struct f2fs_nat_entry raw_ne;
-		nid_t nid = le32_to_cpu(nid_in_journal(sum, i));
-
-		raw_ne = nat_in_journal(sum, i);
-retry:
-		write_lock(&nm_i->nat_tree_lock);
-		ne = __lookup_nat_cache(nm_i, nid);
-		if (ne) {
-			__set_nat_cache_dirty(nm_i, ne);
-			write_unlock(&nm_i->nat_tree_lock);
-			continue;
-		}
-		ne = grab_nat_entry(nm_i, nid);
-		if (!ne) {
-			write_unlock(&nm_i->nat_tree_lock);
-			goto retry;
-		}
-		nat_set_blkaddr(ne, le32_to_cpu(raw_ne.block_addr));
-		nat_set_ino(ne, le32_to_cpu(raw_ne.ino));
-		nat_set_version(ne, raw_ne.version);
-		__set_nat_cache_dirty(nm_i, ne);
-		write_unlock(&nm_i->nat_tree_lock);
-	}
-	update_nats_in_cursum(sum, -i);
-	mutex_unlock(&curseg->curseg_mutex);
-	return true;
-}
-
-/*
- * This function is called during the checkpointing process.
- */
-void flush_nat_entries(struct f2fs_sb_info *sbi)
-{
-	struct f2fs_nm_info *nm_i = NM_I(sbi);
-	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
-	struct f2fs_summary_block *sum = curseg->sum_blk;
-	struct list_head *cur, *n;
-	struct page *page = NULL;
-	struct f2fs_nat_block *nat_blk = NULL;
-	nid_t start_nid = 0, end_nid = 0;
-	bool flushed;
-
-	flushed = flush_nats_in_journal(sbi);
-
-	if (!flushed)
-		mutex_lock(&curseg->curseg_mutex);
-
-	/* 1) flush dirty nat caches */
-	list_for_each_safe(cur, n, &nm_i->dirty_nat_entries) {
-		struct nat_entry *ne;
-		nid_t nid;
-		struct f2fs_nat_entry raw_ne;
-		int offset = -1;
-		block_t new_blkaddr;
-
-		ne = list_entry(cur, struct nat_entry, list);
-		nid = nat_get_nid(ne);
-
-		if (nat_get_blkaddr(ne) == NEW_ADDR)
-			continue;
-		if (flushed)
-			goto to_nat_page;
-
-		/* if there is room for nat enries in curseg->sumpage */
-		offset = lookup_journal_in_cursum(sum, NAT_JOURNAL, nid, 1);
-		if (offset >= 0) {
-			raw_ne = nat_in_journal(sum, offset);
-			goto flush_now;
-		}
-to_nat_page:
-		if (!page || (start_nid > nid || nid > end_nid)) {
-			if (page) {
-				f2fs_put_page(page, 1);
-				page = NULL;
-			}
-			start_nid = START_NID(nid);
-			end_nid = start_nid + NAT_ENTRY_PER_BLOCK - 1;
-
-			/*
-			 * get nat block with dirty flag, increased reference
-			 * count, mapped and lock
-			 */
-			page = get_next_nat_page(sbi, start_nid);
-			nat_blk = page_address(page);
-		}
-
-		BUG_ON(!nat_blk);
-		raw_ne = nat_blk->entries[nid - start_nid];
-flush_now:
-		new_blkaddr = nat_get_blkaddr(ne);
-
-		raw_ne.ino = cpu_to_le32(nat_get_ino(ne));
-		raw_ne.block_addr = cpu_to_le32(new_blkaddr);
-		raw_ne.version = nat_get_version(ne);
-
-		if (offset < 0) {
-			nat_blk->entries[nid - start_nid] = raw_ne;
-		} else {
-			nat_in_journal(sum, offset) = raw_ne;
-			nid_in_journal(sum, offset) = cpu_to_le32(nid);
-		}
-
-		if (nat_get_blkaddr(ne) == NULL_ADDR) {
-			write_lock(&nm_i->nat_tree_lock);
-			__del_from_nat_cache(nm_i, ne);
-			write_unlock(&nm_i->nat_tree_lock);
-
-			/* We can reuse this freed nid at this point */
-			add_free_nid(NM_I(sbi), nid);
-		} else {
-			write_lock(&nm_i->nat_tree_lock);
-			__clear_nat_cache_dirty(nm_i, ne);
-			ne->checkpointed = true;
-			write_unlock(&nm_i->nat_tree_lock);
-		}
-	}
-	if (!flushed)
-		mutex_unlock(&curseg->curseg_mutex);
-	f2fs_put_page(page, 1);
-
-	/* 2) shrink nat caches if necessary */
-	try_to_free_nats(sbi, nm_i->nat_cnt - NM_WOUT_THRESHOLD);
-}
-
-static int init_node_manager(struct f2fs_sb_info *sbi)
-{
-	struct f2fs_super_block *sb_raw = F2FS_RAW_SUPER(sbi);
-	struct f2fs_nm_info *nm_i = NM_I(sbi);
-	unsigned char *version_bitmap;
-	unsigned int nat_segs, nat_blocks;
-
-	nm_i->nat_blkaddr = le32_to_cpu(sb_raw->nat_blkaddr);
-
-	/* segment_count_nat includes pair segment so divide to 2. */
-	nat_segs = le32_to_cpu(sb_raw->segment_count_nat) >> 1;
-	nat_blocks = nat_segs << le32_to_cpu(sb_raw->log_blocks_per_seg);
-	nm_i->max_nid = NAT_ENTRY_PER_BLOCK * nat_blocks;
-	nm_i->fcnt = 0;
-	nm_i->nat_cnt = 0;
-
-	INIT_LIST_HEAD(&nm_i->free_nid_list);
-	INIT_RADIX_TREE(&nm_i->nat_root, GFP_ATOMIC);
-	INIT_LIST_HEAD(&nm_i->nat_entries);
-	INIT_LIST_HEAD(&nm_i->dirty_nat_entries);
-
-	mutex_init(&nm_i->build_lock);
-	spin_lock_init(&nm_i->free_nid_list_lock);
-	rwlock_init(&nm_i->nat_tree_lock);
-
-	nm_i->bitmap_size = __bitmap_size(sbi, NAT_BITMAP);
-	nm_i->init_scan_nid = le32_to_cpu(sbi->ckpt->next_free_nid);
-	nm_i->next_scan_nid = le32_to_cpu(sbi->ckpt->next_free_nid);
-
-	nm_i->nat_bitmap = kzalloc(nm_i->bitmap_size, GFP_KERNEL);
-	if (!nm_i->nat_bitmap)
-		return -ENOMEM;
-	version_bitmap = __bitmap_ptr(sbi, NAT_BITMAP);
-	if (!version_bitmap)
-		return -EFAULT;
-
-	/* copy version bitmap */
-	memcpy(nm_i->nat_bitmap, version_bitmap, nm_i->bitmap_size);
-	return 0;
-}
-
-int build_node_manager(struct f2fs_sb_info *sbi)
-{
-	int err;
-
-	sbi->nm_info = kzalloc(sizeof(struct f2fs_nm_info), GFP_KERNEL);
-	if (!sbi->nm_info)
-		return -ENOMEM;
-
-	err = init_node_manager(sbi);
-	if (err)
-		return err;
-
-	build_free_nids(sbi);
-	return 0;
-}
-
-void destroy_node_manager(struct f2fs_sb_info *sbi)
-{
-	struct f2fs_nm_info *nm_i = NM_I(sbi);
-	struct free_nid *i, *next_i;
-	struct nat_entry *natvec[NATVEC_SIZE];
-	nid_t nid = 0;
-	unsigned int found;
-
-	if (!nm_i)
-		return;
-
-	/* destroy free nid list */
-	spin_lock(&nm_i->free_nid_list_lock);
-	list_for_each_entry_safe(i, next_i, &nm_i->free_nid_list, list) {
-		BUG_ON(i->state == NID_ALLOC);
-		__del_from_free_nid_list(i);
-		nm_i->fcnt--;
-	}
-	BUG_ON(nm_i->fcnt);
-	spin_unlock(&nm_i->free_nid_list_lock);
-
-	/* destroy nat cache */
-	write_lock(&nm_i->nat_tree_lock);
-	while ((found = __gang_lookup_nat_cache(nm_i,
-					nid, NATVEC_SIZE, natvec))) {
-		unsigned idx;
-		for (idx = 0; idx < found; idx++) {
-			struct nat_entry *e = natvec[idx];
-			nid = nat_get_nid(e) + 1;
-			__del_from_nat_cache(nm_i, e);
-		}
-	}
-	BUG_ON(nm_i->nat_cnt);
-	write_unlock(&nm_i->nat_tree_lock);
-
-	kfree(nm_i->nat_bitmap);
-	sbi->nm_info = NULL;
-	kfree(nm_i);
-}
-
-int __init create_node_manager_caches(void)
-{
-	nat_entry_slab = f2fs_kmem_cache_create("nat_entry",
-			sizeof(struct nat_entry), NULL);
-	if (!nat_entry_slab)
-		return -ENOMEM;
-
-	free_nid_slab = f2fs_kmem_cache_create("free_nid",
-			sizeof(struct free_nid), NULL);
-	if (!free_nid_slab) {
-		kmem_cache_destroy(nat_entry_slab);
-		return -ENOMEM;
-	}
-	return 0;
-}
-
-void destroy_node_manager_caches(void)
-{
-	kmem_cache_destroy(free_nid_slab);
-	kmem_cache_destroy(nat_entry_slab);
-}
+					set_dentry_mark(page, mar S                 ¯~ü                                 s®ü                 s®ü                 †ü                                 sàü                 sàü                 _                                 sàü                 ë†                 ë†                 ë†                                 }Äü                 sàü                 ë†                 ë†                 sàü                 _                 ë†                                 sàü                 ë†                 ë†                 ë†                                 }Äü                 sàü                 ë†                 ë†                 sàü                 _                 ë†                                 1ü                 1ü                 1ü                                 ë†                 ë†                                 ë†#                                 sàü                 sàü                                 S                 S                                 s®ü                                 }Äü                 sàü                 ë†                 ë†                 sàü                 _                 ë†                                 }Äü                 sàü                 ë†                 ë†                 sàü                 _                 ë†                                 1ü                                 P                 P                                 %ü                                 }Äü                                 }Äü                                 }Äü                 sàü                 ë†                 ë†                 sàü                 _                 ë†                                 }Äü                                 }Äü                 sàü                 ë†                 ë†                 sàü                 _                 ë†                                 1ü                                 P                                 #ü                                 U                 \                 |‡~ü                                 T                 _                                 0ü                 ]                 1ü                                 P                 S                 P                                	 pÄ
+ ü                 p 
+ ü                 qÄ~ü                                 p                  Q                                 |†                 |                                  pÄ                                 ë®#àü                
+         ü                                 ë®#àü                
+         ü                                 1ü                                 pàü                                 ë®#®ü                 ë®#®ü                                 ë®#àü                
+         ü                                 ë®#àü                
+         ü                                 1ü                                 ë®#àü                                 ë®#àü                                 ë®#àü                
+         ü                                 ë®#àü                                 ë®#àü                
+         ü                                 1ü                                 ^                                 ë®#ü                                 ë®#àü                
+         ü                                 ë®#àü                
+         ü                                 U                 \                 |‡~ü                 |‡~ü                                 ^                 S                 ^                 ^                                	 ~Ä
+ ü                 p 
+ ü                                 |†                 |                                  ~Ä                                 p                                  ~®ü                 ~®ü                 ~®ü                                 ~àü                 ~àü                                
+         ü                 ~àü                                
+         ü                 ~àü                                 1ü                                
+         ü                                
+         ü                                
+         ü                 ~àü                                
+         ü                                
+         ü                 ~àü                                 1ü                                
+         ü                 ~àü                                
+         ü                 ~àü                                 U                 \                 \                                 T                 S                                 t»ü                 s»ü                 s»ü                                 t®ü                 s®ü                 s®ü                                 T                 S                 S                                 T                 S                 S                                 t∞ü                 s∞ü                 s∞ü                                 s¨ü                                 s»ü                                 P                                 U                 \                 U                 \                                 P                 S                 P                 S                 U                 S                 T                                 U                                 P                 S                 P                                 pàü                 sàü                                 sàü                                 sàü                                 sàü                                 sàü                                 sàü                                 1ü                                 P                                 U                                 P                 S                 P                                 U                 ë∞                                 T                 ë¨                                 Q                 S                                 R                 \                                 X                 _                                 	ˇü                 P                 pü                 P                                 0ü                 ]                                 ë∏                                 P                 pü                                 P                 pü                 P                                 ]                                 ë∏                                 P                 pü                                 	ˇü                 P                 pü                 P                                 0ü                 \                                 P                 pü                                 S                                 P                 pü                 P                                 S                                 P                 pü                                 ^                                 U                 S                                 T                 \                 \                                 ]                 ]                                 P                 S                 P                 S                                 P                 S                 S                                 2ü                 2ü                                
+         ü                
+         ü                                 3ü                 3ü                                 U                 U                                 U                 U                                 3ü                 3ü                                 U                                 T                                 Q                                 R                                 P                 S                 P                 S                 P                                 P                 S                 S                 P                                 2ü                 2ü                                
+         ü                
+         ü                                 3ü                 3ü                                 U                 U                                 U                 U                                 3ü                 3ü                                 U                 S                 S                                 T                                 Q                 _                 _                                 R                 ë∏                                 X                 ^                 ^                                 ]                 ]                                 P                 \                 P                 \                 P                 S                 \                                
+         ü                 ë∞#àü                
+         ü                                
+         ü                 ë∞#àü                
+         ü                                
+         ü                 ë∞#àü                
+         ü                                
+         ü                 ë∞#àü                
+         ü                                 P                 \                                 2ü                                
+         ü                                 3ü                                 U                                 U                 U                                 3ü                 3ü                                 P                 S                 P                 S                                
+         ü                
+         ü                                
+         ü                                
+         ü                                
+         ü                 ë∞#àü                
+         ü                                
+         ü                                
+         ü                 ë∞#àü                
+         ü                                 1ü                                 S                                 2ü                                
+         ü                                 3ü                                 U                                 U                 U                                 3ü                 3ü                                 ë∞#àü                                 ]                                 ë∞#–ü                                 }                                  ë∞#àü                                 ë∞#àü                
+         ü                                
+         ü                 ë∞#àü                
+         ü                                 ë∞#àü                
+         ü                                
+         ü                 ë∞#àü                
+         ü                                 1ü                                
+         ü                                
+         ü                                
+         ü                 ë∞#àü                
+         ü                                
+         ü                                
+         ü                 ë∞#àü                
+         ü                                 1ü                                
+         ü                 ë∞#àü                
+         ü                                
+         ü                 ë∞#àü                
+         ü                                 U                 \                 \                                 T                 ^                 ^                                 ]                 ]                                 P                 S                 P                 S                 P                 S                 U                 S                                
+         ü                 sàü                
+         ü                                
+         ü                 sàü                
+         ü                                
+         ü                 sàü                
+         ü                                
+         ü                 sàü                
+         ü                                 P                 S                                 2ü                                
+         ü                                 3ü                                 U                                 U                 U                                 3ü                 3ü                                 P                 S                 P                 \                                
+         ü                
+         ü                                
+         ü                                
+         ü                                
+         ü                 sàü                
+         ü                                
+         ü                                
+         ü                 sàü                
+         ü                                 1ü                                 S                                 2ü                                
+         ü                                 3ü                                 U                                 U                 U                                 3ü                 3ü                                 U                                 }                                  sàü                
+         ü                                
+         ü                 sàü                
+         ü                                 sàü                
+         ü                                
+         ü                 sàü                
+         ü                                
+         ü                 sàü                
+         ü                                
+         ü                 sàü                
+         ü                ]       0D cº  clear_nlink ÿº  set_nlink ﬂΩ  __iget væ  generic_delete_inode ©æ  bmap ˛æ  inode_needs_sync 1ø  inode_init_owner ¿  inode_dio_done ä¿  inode_wait ø¿  inode_dio_wait –¡  inode_owner_or_capable 9¬  init_special_inode ä¬  inode_init ª¬  inode_init_early ˙À  ilookup5_nowait ãÕ  igrab ≥œ  iunique 1”  __remove_inode_hash ÷  __insert_inode_hash ¯Ÿ  file_update_time ø⁄  get_next_ino ]€  should_remove_suid ≤€  file_remove_suid }‹  touch_atime Í›  unlock_new_inode ﬂ  ihold ßﬂ  inc_nlink D‡  drop_nlink ƒ‚  free_inode_nonrcu í„  inode_sb_list_add ˝‰  inode_add_lru °Ê  clear_inode Ë  address_space_init_once ¨Ë  inode_init_once ãÈ  __destroy_inode ¥Ó  iput ‰Ò  insert_inode_locked4 å˜  insert_inode_locked Ì˝  prune_icache_sb Î invalidate_inodes k evict_inodes ˘ inode_init_always " new_inode_pseudo t new_inode 
+ proc_nr_inodes I get_nr_dirty_inodes B ilookup : ilookup5 / iget5_locked ¶ iget_locked v? inodes_stat ¶? empty_aops YA inode_sb_list_lock |A __pcpu_unique_nr_inodes íA nr_inodes ®A __pcpu_unique_nr_unused æA nr_unused ïB __pcpu_unique_last_ino ¨B last_ino     .       0D 1   kernel_symbol Ü   __s8 ò   __u8 ™   __s16 º   __u16 Œ   __s32 ‡   __u32 Î   __s64 ˝   __u64   s8   u8 #  s16 .  u16 9  s32 D  u32 O  s64 Z  u64 ú  __kernel_long_t Æ  __kernel_ulong_t π  __kernel_ino_t ƒ  __kernel_pid_t œ  __kernel_uid32_t ⁄  __kernel_gid32_t Â  __kernel_size_t   __kernel_ssize_t ˚  __kernel_loff_t   __kernel_time_t   __kernel_clock_t   __kernel_timer_t '  __kernel_clockid_t 8  __kernel_dev_t C  dev_t N  ino_t Y  umode_t d  pid_t o  clockid_t z  bool å  uid_t ó  gid_t ¢  loff_t ≠  size_t ∏  ssize_t √  time_t Œ  int32_t Ÿ  uint32_t ‰  sector_t Ô  blkcnt_t ˙  gfp_t   fmode_t   oom_flags_t   phys_addr_t &  resource_size_t F  atomic_t f  atomic64_t q  list_head ú  hlist_head µ  hlist_node ˆ  callback_head P  obs_kernel_param »  pt_regs Ω  desc_struct –  gate_struct64 b  gate_desc m  desc_ptr í  pteval_t ù  pmdval_t ®  pudval_t ≥  pgdval_t æ  pgprotval_t ﬁ  pte_t È  pgprot   pgprot_t "  pgd_t B  pud_t b  pmd_t m  pgtable_t ∂  paravirt_callee_save œ  pv_info 	  pv_lazy_ops =	  pv_time_ops ú	  pv_cpu_ops 9  pv_irq_ops ö  pv_apic_ops œ  pv_mmu_ops Ï  kernel_vm86_regs ì  math_emu_info ;  cpumask “  cpumask_t ›  cpumask_var_t    cpuinfo_x86 ë!  x86_hw_tss '  tss_struct ;"  i387_fsave_struct w#  i387_fxsave_struct *$  i387_soft_struct %  ymmh_struct 1%  xsave_hdr_struct Ü%  xsave_struct æ%  thread_xstate ˝%  fpu l&  irq_stack_union Y  thread_struct …&  atomic_long_t ‘&  __ticket_t ﬂ&  __ticketpair_t Í&  __raw_tickets …  arch_spinlock .'  arch_spinlock_t s'  arch_rwlock_t ~'  lock_class_key á'  raw_spinlock †'  raw_spinlock_t ø'  spinlock “'  spinlock_t Ú'  rwlock_t ˝'  wait_queue_t E(  wait_queue_func_t (  __wait_queue {(  wait_bit_key †(  wait_bit_queue ≈(  __wait_queue_head Í(  wait_queue_head_t )  seqlock_t !)  se
